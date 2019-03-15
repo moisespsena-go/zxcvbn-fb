@@ -3,6 +3,7 @@ package zxcvbn_fb
 import (
 	"bytes"
 	"encoding/json"
+	"os"
 	"os/exec"
 	"syscall"
 )
@@ -16,26 +17,40 @@ type ZxcvbnResult struct {
 }
 
 func Zxcvbn(password string, userInputs ...string) (*ZxcvbnResult, error) {
-	var args []string
-	for _, ui := range userInputs {
-		args = append(args, "--user-input", ui)
+	var args = append([]string{
+		"-c",
+		`import json
+import sys
+
+from zxcvbn import zxcvbn
+
+class JSONEncoder(json.JSONEncoder):
+    def default(self, o):
+        try:
+            return super(JSONEncoder, self).default(o)
+        except TypeError:
+            return str(o)
+
+res = zxcvbn(sys.argv[1], user_inputs=sys.argv[2:])
+json.dump(res, sys.stdout, indent=2, cls=JSONEncoder)
+sys.stdout.write('\n')
+`,
+		password,
+	}, userInputs...)
+
+	cmd := exec.Command("python3", args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Setpgid: true,
+	}
+	cmd.Stderr = os.Stderr
+
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	err := cmd.Run()
+	if err != nil {
+		return nil, err
 	}
 
-	cmd := exec.Command("zxcvbn", args...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Pdeathsig: syscall.SIGTERM,
-	}
-	var in, out bytes.Buffer
-	in.WriteString(password + "\n")
-	cmd.Stdout, cmd.Stdin = &out, &in
-	err := cmd.Start()
-	if err != nil {
-		return nil, err
-	}
-	err = cmd.Wait()
-	if err != nil {
-		return nil, err
-	}
 	dec := json.NewDecoder(&out)
 	var result ZxcvbnResult
 	err = dec.Decode(&result)
